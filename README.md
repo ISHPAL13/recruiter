@@ -72,6 +72,22 @@ Navigate to: `http://localhost:5000`
 docker compose up --build
 ```
 
+### Render Deployment
+This repo now includes [render.yaml](C:\Users\ishpa\OneDrive\Desktop\HRBOT\render.yaml) for a Docker-based Render deploy.
+
+Required Render environment variables:
+```bash
+SECRET_KEY=your-secure-secret-key
+GEMINI_API_KEY=your-gemini-api-key
+GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview
+GEMINI_LIVE_VOICE=Aoede
+```
+
+Important note:
+- `backend/uploads/` and `backend/reports/` use local filesystem storage
+- on Render free web services, the filesystem is ephemeral, so uploaded CVs and generated reports can disappear after restart/redeploy/spin-down
+- for durable storage, move those files to object storage or a persistent external store
+
 ---
 
 ## 📋 How to Use
