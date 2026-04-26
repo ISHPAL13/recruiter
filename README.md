@@ -46,8 +46,8 @@ pip install -r requirements.txt
 #### Option A: Environment Variables (Recommended)
 ```bash
 export GEMINI_API_KEY="your_gemini_api_key_here"
-export DEEPGRAM_API_KEY="your_deepgram_api_key_here"
-export HEYGEN_API_KEY="your_heygen_api_key_here"  # Optional
+export GEMINI_LIVE_MODEL="gemini-3.1-flash-live-preview"
+export GEMINI_LIVE_VOICE="Aoede"
 ```
 
 #### Option B: Edit `backend/app.py` (lines 28-29)
@@ -58,15 +58,19 @@ DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "your_actual_deepgram_api_key_h
 
 **Get API Keys:**
 - Gemini: https://makersuite.google.com/app/apikey
-- Deepgram: https://console.deepgram.com/ (Free tier: 45,000 minutes/year)
 
 ### 3. **Run the Server**
 ```bash
-python app.py
+python run.py
 ```
 
 ### 4. **Open Browser**
 Navigate to: `http://localhost:5000`
+
+### Docker
+```bash
+docker compose up --build
+```
 
 ---
 
@@ -114,7 +118,7 @@ Navigate to: `http://localhost:5000`
 | **Backend** | Flask (Python) |
 | **Frontend** | Vanilla JavaScript |
 | **Styling** | TailwindCSS |
-| **Avatar** | HeyGen Streaming API |
+| **Avatar** | LiveAvatar |
 | **Video** | LiveKit |
 | **Speech-to-Text** | Deepgram API |
 | **LLM** | Google Gemini 2.0 Flash |
@@ -142,13 +146,14 @@ HRBOT/
 ## ⚙️ Configuration Options
 
 ### **Avatar Settings** (Sidebar)
-- **Avatar ID**: Change HeyGen avatar character
+- **Avatar ID**: Set your LiveAvatar avatar identifier
 - **Voice ID**: Modify voice characteristics (optional)
 
 ### **Environment Variables** (Recommended)
 ```bash
 export SECRET_KEY="your-secure-secret-key"
-export HEYGEN_API_KEY="your-heygen-key"
+export LIVEAVATAR_API_KEY="your-liveavatar-key"
+export LIVEAVATAR_AVATAR_ID="your-liveavatar-avatar-id"
 export GEMINI_API_KEY="your-gemini-key"
 export DEEPGRAM_API_KEY="your-deepgram-key"
 ```

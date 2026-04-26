@@ -5,9 +5,12 @@ from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 import requests, os, tempfile, shutil
+import asyncio
+import traceback
 import PyPDF2
 import base64
 from google import genai
+from google.genai import types
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -80,9 +83,19 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(REPORTS_FOLDER, exist_ok=True)
 
 # Get API keys from environment
-HEYGEN_API_KEY = os.getenv("HEYGEN_API_KEY", "ZWQ3MGM4ZGE4NDdiNDU3MjkxMTA3ZjlhNmUwY2FiY2YtMTc1NjcwNDg3OQ==")
+LIVEAVATAR_API_KEY = os.getenv("LIVEAVATAR_API_KEY") or os.getenv("HEYGEN_API_KEY")
+LIVEAVATAR_AVATAR_ID = os.getenv("LIVEAVATAR_AVATAR_ID")
+LIVEAVATAR_CONTEXT_ID = os.getenv("LIVEAVATAR_CONTEXT_ID")
+LIVEAVATAR_LANGUAGE = os.getenv("LIVEAVATAR_LANGUAGE", "en")
+LIVEAVATAR_DEFAULT_VOICE_ID = os.getenv("LIVEAVATAR_DEFAULT_VOICE_ID")
+LIVEAVATAR_VOICE_ID_PROFESSIONAL = os.getenv("LIVEAVATAR_VOICE_ID_PROFESSIONAL")
+LIVEAVATAR_VOICE_ID_FRIENDLY = os.getenv("LIVEAVATAR_VOICE_ID_FRIENDLY")
+LIVEAVATAR_VOICE_ID_STRICT = os.getenv("LIVEAVATAR_VOICE_ID_STRICT")
+LIVEAVATAR_VOICE_ID_CASUAL = os.getenv("LIVEAVATAR_VOICE_ID_CASUAL")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your_gemini_api_key_here")
 DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "your_deepgram_api_key_here")
+GEMINI_LIVE_MODEL = os.getenv("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
+GEMINI_LIVE_VOICE = os.getenv("GEMINI_LIVE_VOICE", "Aoede")
 
 def extract_text_from_pdf(pdf_path):
     """Extract text content from PDF file"""
@@ -123,7 +136,7 @@ INTERVIEW GUIDELINES:
 - Your goal is to assess their fit for {role}.
 - Ask questions tailored to their experience level ({experience}) and listed skills ({skills}).
 - NEVER repeat similar questions or ask about the same topic twice.
-- Move naturally between topics: projects → technical skills → soft skills → situational.
+- Move naturally between topics: projects -> technical skills -> soft skills -> situational.
 - Build on their previous answers with NEW follow-up questions.
 - Vary your question types: "What", "How", "Why", "Tell me about", "Describe".
 - Keep the conversation flowing naturally like a real interview."""
@@ -165,14 +178,25 @@ TONE: Casual & Relaxed
     return base_context + "\n" + tone_styles.get(tone, tone_styles['professional'])
 
 def get_voice_for_tone(tone):
-    """Map interview tone to appropriate HeyGen voice ID"""
+    """Map interview tone to the configured LiveAvatar voice ID"""
     voice_map = {
-        'professional': '2d5b0e6cf36f460aa7fc47e3eee4ba54',
-        'friendly': 'a7c6da62cc1e4dfab500dc13fcd4b103',
-        'strict': '1bd001e7e50f421d891986aad5158bc8',
-        'casual': '3b554273f2b94a1e89473b7fddad1880'
+        'professional': LIVEAVATAR_VOICE_ID_PROFESSIONAL,
+        'friendly': LIVEAVATAR_VOICE_ID_FRIENDLY,
+        'strict': LIVEAVATAR_VOICE_ID_STRICT,
+        'casual': LIVEAVATAR_VOICE_ID_CASUAL
     }
-    return voice_map.get(tone, voice_map['professional'])
+    return voice_map.get(tone) or LIVEAVATAR_DEFAULT_VOICE_ID
+
+
+def build_liveavatar_persona(voice_id: Optional[str]) -> Dict:
+    persona = {
+        "language": LIVEAVATAR_LANGUAGE
+    }
+    if voice_id:
+        persona["voice_id"] = voice_id
+    if LIVEAVATAR_CONTEXT_ID:
+        persona["context_id"] = LIVEAVATAR_CONTEXT_ID
+    return persona
 
 @app.get("/api/voice-config")
 async def get_voice_config(request: Request):
@@ -188,7 +212,7 @@ async def get_voice_config(request: Request):
     tone = session_data.get('interviewer_tone', 'professional')
     voice_id = get_voice_for_tone(tone)
     
-    return {"tone": tone, "voice_id": voice_id}
+    return {"tone": tone, "voice_id": voice_id, "avatar_id": LIVEAVATAR_AVATAR_ID}
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -209,10 +233,10 @@ async def login(request: Request):
 @app.get("/interview", response_class=HTMLResponse)
 async def interview(request: Request):
     session_id = get_session_id(request)
-    print(f"🔍 /interview - Session ID: {session_id}")
+    print(f"[SEARCH] /interview - Session ID: {session_id}")
     
     if not session_id:
-        print("   ❌ No session ID cookie")
+        print("   [ERROR] No session ID cookie")
         return RedirectResponse(url="/login", status_code=302)
     
     session_data = get_session_data(session_id)
@@ -220,10 +244,10 @@ async def interview(request: Request):
     print(f"   'user_name' in session: {'user_name' in session_data}")
     
     if 'user_name' not in session_data:
-        print("   ❌ Redirecting to login - no user_name in session")
+        print("   [ERROR] Redirecting to login - no user_name in session")
         return RedirectResponse(url="/login", status_code=302)
     
-    print(f"   ✅ User {session_data.get('user_name')} accessing interview page")
+    print(f"   [SUCCESS] User {session_data.get('user_name')} accessing interview page")
     return templates.TemplateResponse("dashboard.html", {"request": request})
 
 @app.post("/api/login")
@@ -286,7 +310,7 @@ async def api_login(
         }
         save_session(session_id, session_data)
         
-        print(f"✅ User logged in: {userName}")
+        print(f"[SUCCESS] User logged in: {userName}")
         print(f"   Email: {userEmail}")
         print(f"   Mock Interview: {mockInterview == 'on'}")
         print(f"   Tone: {session_data['interviewer_tone']}")
@@ -341,11 +365,103 @@ async def logout(request: Request):
     response.delete_cookie("session_id")
     return response
 
-@app.post("/heygen/session-token")
-async def get_session_token():
-    if not HEYGEN_API_KEY or HEYGEN_API_KEY.startswith("your_"):
-        raise HTTPException(status_code=500, detail="HEYGEN_API_KEY not configured")
-    return {"data": {"token": HEYGEN_API_KEY}}
+@app.post("/liveavatar/session")
+async def create_liveavatar_session(request: Request):
+    if not LIVEAVATAR_API_KEY or LIVEAVATAR_API_KEY.startswith("your_"):
+        raise HTTPException(status_code=500, detail="LIVEAVATAR_API_KEY not configured")
+    if not LIVEAVATAR_AVATAR_ID:
+        raise HTTPException(status_code=500, detail="LIVEAVATAR_AVATAR_ID not configured")
+
+    session_id = get_session_id(request)
+    session_data = get_session_data(session_id) if session_id else {}
+    tone = session_data.get('interviewer_tone', 'professional')
+    voice_id = get_voice_for_tone(tone)
+
+    token_payload = {
+        "mode": "FULL",
+        "avatar_id": LIVEAVATAR_AVATAR_ID,
+        "avatar_persona": build_liveavatar_persona(voice_id),
+        "interactivity_type": "CONVERSATIONAL",
+    }
+
+    token_response = requests.post(
+        "https://api.liveavatar.com/v1/sessions/token",
+        headers={
+            "X-API-KEY": LIVEAVATAR_API_KEY,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        json=token_payload,
+        timeout=30,
+    )
+
+    if token_response.status_code >= 400:
+        raise HTTPException(
+            status_code=token_response.status_code,
+            detail=f"LiveAvatar token error: {token_response.text}"
+        )
+
+    token_result = token_response.json()
+    session_token = (
+        token_result.get("access_token")
+        or token_result.get("data", {}).get("access_token")
+        or token_result.get("session_token")
+        or token_result.get("data", {}).get("session_token")
+        or token_result.get("token")
+        or token_result.get("data", {}).get("token")
+    )
+
+    if not session_token:
+        raise HTTPException(status_code=500, detail=f"LiveAvatar token missing from response: {token_result}")
+
+    start_response = requests.post(
+        "https://api.liveavatar.com/v1/sessions/start",
+        headers={
+            "Authorization": f"Bearer {session_token}",
+            "Accept": "application/json",
+        },
+        timeout=30,
+    )
+
+    if start_response.status_code >= 400:
+        raise HTTPException(
+            status_code=start_response.status_code,
+            detail=f"LiveAvatar start error: {start_response.text}"
+        )
+
+    start_result = start_response.json()
+    start_data = start_result.get("data", {})
+
+    return {
+        "session_token": session_token,
+        "session_id": start_data.get("session_id"),
+        "url": start_data.get("livekit_url"),
+        "access_token": start_data.get("livekit_client_token"),
+        "max_session_duration": start_data.get("max_session_duration"),
+        "ws_url": start_data.get("ws_url"),
+        "raw": start_result,
+    }
+
+
+@app.post("/liveavatar/session/stop")
+async def stop_liveavatar_session(payload: dict):
+    session_token = payload.get("session_token")
+    if not session_token:
+        raise HTTPException(status_code=400, detail="session_token is required")
+
+    response = requests.post(
+        "https://api.liveavatar.com/v1/sessions/stop",
+        headers={
+            "Authorization": f"Bearer {session_token}",
+            "Accept": "application/json",
+        },
+        timeout=30,
+    )
+
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=f"LiveAvatar stop error: {response.text}")
+
+    return response.json()
 
 @app.get("/deepgram/api-key")
 async def get_deepgram_key():
@@ -367,7 +483,7 @@ async def speech_to_text(audio: UploadFile = File(...)):
         if len(audio_data) == 0:
             raise HTTPException(status_code=400, detail="Empty audio file")
         
-        print(f"📤 Sending {len(audio_data)} bytes to Deepgram STT...")
+        print(f"[SEND] Sending {len(audio_data)} bytes to Deepgram STT...")
         
         # Send to Deepgram API
         headers = {
@@ -391,7 +507,7 @@ async def speech_to_text(audio: UploadFile = File(...)):
         )
         
         if response.status_code != 200:
-            print(f"❌ Deepgram API error: {response.status_code} - {response.text}")
+            print(f"[ERROR] Deepgram API error: {response.status_code} - {response.text}")
             raise HTTPException(status_code=500, detail=f"Deepgram API error: {response.status_code}")
         
         result = response.json()
@@ -403,14 +519,14 @@ async def speech_to_text(audio: UploadFile = File(...)):
             if alternatives:
                 transcript = alternatives[0].get("transcript", "").strip()
         
-        print(f"📝 Deepgram transcript: '{transcript}'")
+        print(f"[TRANSCRIPT] Deepgram transcript: '{transcript}'")
         
         return {"text": transcript}
         
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ STT error: {e}")
+        print(f"[ERROR] STT error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/llm")
@@ -418,10 +534,10 @@ async def llm(request: Request):
     data = await request.json()
     user_input = data.get("prompt", "")
     
-    print(f"\n🤖 LLM Request - User input: '{user_input}'")
+    print(f"\n[AI] LLM Request - User input: '{user_input}'")
     
     if not GEMINI_API_KEY or GEMINI_API_KEY.startswith("your_"):
-        print("❌ GEMINI_API_KEY not configured properly!")
+        print("[ERROR] GEMINI_API_KEY not configured properly!")
         return JSONResponse({
             "error": "GEMINI_API_KEY not configured. Please set your API key.",
             "text": "I apologize, but my AI system is not configured properly. Please contact the administrator."
@@ -472,7 +588,7 @@ CANDIDATE'S RESPONSE: {user_input}
 
 IMPORTANT: Reply with ONE concise sentence (8-12 words). Be direct and natural."""
         
-        print(f"📤 Sending to Gemini 2.5 Flash...")
+        print(f"[SEND] Sending to Gemini 2.5 Flash...")
         
         response = client.models.generate_content(
             model="gemini-2.5-flash",
@@ -490,235 +606,175 @@ IMPORTANT: Reply with ONE concise sentence (8-12 words). Be direct and natural."
         session_data['conversation_history'] = conversation_history
         save_session(session_id, session_data)
         
-        print(f"✅ Gemini response: {bot_response}")
+        print(f"[SUCCESS] Gemini response: {bot_response}")
         
         return {"text": bot_response}
         
     except Exception as e:
-        print(f"❌ LLM error: {e}")
+        print(f"[ERROR] LLM error: {e}")
         error_msg = "I'm having trouble processing that. Could you rephrase?"
         return {"text": error_msg, "error": str(e)}
 
 @app.websocket("/ws/interview")
 async def websocket_interview(websocket: WebSocket):
-    """WebSocket endpoint for real-time STT and LLM communication"""
+    """Gemini Live speech-to-speech proxy for the interview experience."""
     await websocket.accept()
-    print("🔌 WebSocket connection established")
-    
-    # Try to get session from cookies
-    session_id = None
+
     cookies = websocket.cookies
-    if 'session_id' in cookies:
-        session_id = cookies['session_id']
-        print(f"✅ Got session_id from WebSocket cookies: {session_id}")
-    
+    session_id = cookies.get("session_id")
+    if not session_id or session_id not in SESSION_STORE:
+        await websocket.send_text(json.dumps({"error": "Invalid or expired session"}))
+        await websocket.close(code=4001, reason="Invalid or expired session")
+        return
+
+    session_data = get_session_data(session_id)
+    if "user_name" not in session_data:
+        await websocket.send_text(json.dumps({"error": "Not logged in"}))
+        await websocket.close(code=4001, reason="Not logged in")
+        return
+
+    if not GEMINI_API_KEY or GEMINI_API_KEY.startswith("your_"):
+        await websocket.send_text(json.dumps({"error": "GEMINI_API_KEY is not configured"}))
+        await websocket.close(code=4002, reason="GEMINI_API_KEY not configured")
+        return
+
+    cv_text = session_data.get("cv_text", "")
+    user_name = session_data.get("user_name", "Candidate")
+    tone = session_data.get("interviewer_tone", "professional")
+    system_prompt = get_tone_prompt(tone, cv_text, user_name, session_data)
+    opening_prompt = (
+        f"Greet {user_name} briefly and ask the first interview question now. "
+        "Keep it natural and concise."
+    )
+
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    config = types.LiveConnectConfig(
+        response_modalities=[types.Modality.AUDIO],
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name=GEMINI_LIVE_VOICE
+                )
+            )
+        ),
+        realtime_input_config=types.RealtimeInputConfig(
+            automatic_activity_detection=types.AutomaticActivityDetection(
+                disabled=False,
+                start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+                prefix_padding_ms=50,
+                silence_duration_ms=250,
+            )
+        ),
+        system_instruction=types.Content(
+            parts=[types.Part(text=system_prompt)]
+        ),
+        input_audio_transcription=types.AudioTranscriptionConfig(),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+    )
+
     try:
-        while True:
-            # Receive message from client
-            message = await websocket.receive_json()
-            action = message.get("action")
-            
-            print(f"📨 WebSocket received action: {action}")
-            
-            # Handle session initialization
-            if action == "init":
-                # Get session from cookies (sent in initial message)
-                session_id = message.get("session_id")
-                if not session_id or session_id not in SESSION_STORE:
-                    await websocket.send_json({
-                        "action": "error",
-                        "error": "Invalid session"
-                    })
-                    continue
-                
-                print(f"✅ WebSocket session initialized: {session_id}")
-                await websocket.send_json({
-                    "action": "init_success",
-                    "message": "WebSocket connected"
-                })
-            
-            # Handle STT request
-            elif action == "stt":
+        async with client.aio.live.connect(model=GEMINI_LIVE_MODEL, config=config) as session:
+            print(f"[WS] Gemini Live session opened for {user_name}", flush=True)
+            await session.send_realtime_input(text=opening_prompt)
+            print("[WS] Sent Gemini opening prompt via realtime text", flush=True)
+            await websocket.send_text(json.dumps({"status": "connected"}))
+
+            audio_queue: asyncio.Queue[bytes] = asyncio.Queue()
+            async def receive_from_client():
                 try:
-                    # Receive base64 encoded audio
-                    audio_base64 = message.get("audio")
-                    if not audio_base64:
-                        await websocket.send_json({
-                            "action": "stt_response",
-                            "error": "No audio data"
-                        })
-                        continue
-                    
-                    # Decode audio
-                    audio_data = base64.b64decode(audio_base64)
-                    
-                    print(f"📤 WebSocket STT: Processing {len(audio_data)} bytes")
-                    
-                    # Send to Deepgram
-                    headers = {
-                        "Authorization": f"Token {DEEPGRAM_API_KEY}",
-                        "Content-Type": "audio/webm"
-                    }
-                    
-                    params = {
-                        "model": "nova-2",
-                        "language": "en-US",
-                        "smart_format": "true",
-                        "punctuate": "true"
-                    }
-                    
-                    response = requests.post(
-                        "https://api.deepgram.com/v1/listen",
-                        headers=headers,
-                        params=params,
-                        data=audio_data,
-                        timeout=10
-                    )
-                    
-                    if response.status_code != 200:
-                        await websocket.send_json({
-                            "action": "stt_response",
-                            "error": f"Deepgram error: {response.status_code}"
-                        })
-                        continue
-                    
-                    result = response.json()
-                    transcript = ""
-                    if result.get("results") and result["results"].get("channels"):
-                        alternatives = result["results"]["channels"][0].get("alternatives", [])
-                        if alternatives:
-                            transcript = alternatives[0].get("transcript", "").strip()
-                    
-                    print(f"📝 WebSocket STT result: '{transcript}'")
-                    
-                    await websocket.send_json({
-                        "action": "stt_response",
-                        "text": transcript
-                    })
-                    
+                    while True:
+                        payload = json.loads(await websocket.receive_text())
+
+                        if "audio" in payload:
+                            await audio_queue.put(base64.b64decode(payload["audio"]))
+
+                        if "text" in payload and str(payload["text"]).strip():
+                            print(f"[WS] Forwarding text input to Gemini: {str(payload['text']).strip()[:120]}", flush=True)
+                            await session.send_realtime_input(
+                                text=str(payload["text"]).strip()
+                            )
+                except WebSocketDisconnect:
+                    print(f"[WS] Interview client disconnected: {session_id}")
+                    return
                 except Exception as e:
-                    print(f"❌ WebSocket STT error: {e}")
-                    await websocket.send_json({
-                        "action": "stt_response",
-                        "error": str(e)
-                    })
-            
-            # Handle LLM request
-            elif action == "llm":
-                print(f"\n📨 Received LLM request via WebSocket")
-                print(f"   Action: {action}")
-                print(f"   Message keys: {list(message.keys())}")
+                    print(f"[WS] Client -> Gemini queue error: {e}")
+                    raise
+
+            async def send_audio_to_gemini():
                 try:
-                    if not session_id or session_id not in SESSION_STORE:
-                        print(f"   ❌ Session validation failed: session_id={session_id}, exists={session_id in SESSION_STORE}")
-                        await websocket.send_json({
-                            "action": "llm_response",
-                            "error": "No active session"
-                        })
-                        continue
-                    
-                    user_input = message.get("prompt", "")
-                    print(f"🤖 WebSocket LLM: Processing '{user_input}'")
-                    print(f"   Session ID: {session_id}")
-                    
-                    session_data = get_session_data(session_id)
-                    print(f"   Session data keys: {list(session_data.keys())}")
-                    
-                    # Set API key
-                    if 'GEMINI_API_KEY' not in os.environ and GEMINI_API_KEY:
-                        os.environ['GEMINI_API_KEY'] = GEMINI_API_KEY
-                    
-                    client = genai.Client()
-                    
-                    # Get user context
-                    cv_text = session_data.get('cv_text', '')
-                    user_name = session_data.get('user_name', 'Candidate')
-                    tone = session_data.get('interviewer_tone', 'professional')
-                    
-                    # Build prompt
-                    system_prompt = get_tone_prompt(tone, cv_text, user_name, session_data)
-                    conversation_history = session_data.get('conversation_history', [])
-                    
-                    context = ""
-                    if conversation_history:
-                        recent = conversation_history[-3:]
-                        context = "\n".join([
-                            f"Q: {item['question']}\nA: {item['answer']}"
-                            for item in recent
-                        ])
-                        context = f"\n\nRECENT CONVERSATION:\n{context}\n"
-                    
-                    full_prompt = f"""{system_prompt}
-
-{context}
-
-CANDIDATE'S RESPONSE: {user_input}
-
-IMPORTANT: Reply with ONE concise sentence (8-12 words). Be direct and natural."""
-                    
-                    # Generate response
-                    print(f"   Calling Gemini 2.5 Flash with prompt length: {len(full_prompt)}")
-                    
-                    try:
-                        response = client.models.generate_content(
-                            model="gemini-2.5-flash",
-                            contents=full_prompt
+                    while True:
+                        chunk = await audio_queue.get()
+                        await session.send_realtime_input(
+                            audio=types.Blob(
+                                data=chunk,
+                                mime_type="audio/pcm;rate=16000"
+                            )
                         )
-                        bot_response = response.text.strip()
-                    except Exception as e:
-                        print(f"   ❌ Gemini 2.5 Flash failed: {e}")
-                        bot_response = ""
-
-                    print(f"   Gemini raw response: '{bot_response}'")
-                    print(f"   Response length: {len(bot_response)}")
-                    
-                    if not bot_response:
-                        print(f"   ⚠️ WARNING: Empty response from Gemini!")
-                        print(f"   Response object: {response}")
-                    
-                    # Store in conversation history
-                    conversation_history.append({
-                        "question": bot_response,
-                        "answer": user_input,
-                        "timestamp": datetime.now().isoformat()
-                    })
-                    session_data['conversation_history'] = conversation_history
-                    save_session(session_id, session_data)
-                    
-                    print(f"✅ WebSocket LLM response: {bot_response}")
-                    
-                    await websocket.send_json({
-                        "action": "llm_response",
-                        "text": bot_response
-                    })
-                    
+                except asyncio.CancelledError:
+                    pass
                 except Exception as e:
-                    print(f"❌ WebSocket LLM error: {e}")
-                    import traceback
-                    print(f"   Full traceback:")
-                    traceback.print_exc()
-                    try:
-                        await websocket.send_json({
-                            "action": "llm_response",
-                            "text": "I'm having trouble processing that. Could you rephrase?",
-                            "error": str(e)
-                        })
-                    except:
-                        print(f"   ❌ Failed to send error response")
-            
-            else:
-                await websocket.send_json({
-                    "action": "error",
-                    "error": f"Unknown action: {action}"
-                })
-                
-    except WebSocketDisconnect:
-        print("🔌 WebSocket disconnected")
+                    print(f"[WS] Audio -> Gemini error: {e}\n{traceback.format_exc()}")
+                    raise
+
+            async def receive_from_gemini():
+                try:
+                    while True:
+                        async for response in session.receive():
+                            server_content = response.server_content
+                            if not server_content:
+                                continue
+
+                            if server_content.model_turn:
+                                for part in server_content.model_turn.parts:
+                                    if part.inline_data and part.inline_data.data:
+                                        print(f"[WS] Sending Gemini audio chunk: {len(part.inline_data.data)} bytes", flush=True)
+                                        await websocket.send_text(json.dumps({
+                                            "audio": base64.b64encode(part.inline_data.data).decode("utf-8")
+                                        }))
+
+                            if server_content.input_transcription and server_content.input_transcription.text:
+                                print(f"[WS] Caller transcript: {server_content.input_transcription.text}", flush=True)
+                                await websocket.send_text(json.dumps({
+                                    "inputTranscript": server_content.input_transcription.text
+                                }))
+
+                            if server_content.output_transcription and server_content.output_transcription.text:
+                                print(f"[WS] Gemini transcript: {server_content.output_transcription.text}", flush=True)
+                                await websocket.send_text(json.dumps({
+                                    "text": server_content.output_transcription.text
+                                }))
+
+                            if server_content.turn_complete:
+                                print("[WS] Gemini turn complete", flush=True)
+                                await websocket.send_text(json.dumps({"turnComplete": True}))
+
+                            if server_content.interrupted:
+                                await websocket.send_text(json.dumps({"interrupted": True}))
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    print(f"[WS] Gemini -> client error: {e}\n{traceback.format_exc()}")
+                    raise
+
+            background_tasks = [
+                asyncio.create_task(send_audio_to_gemini()),
+                asyncio.create_task(receive_from_gemini()),
+            ]
+
+            try:
+                await receive_from_client()
+            finally:
+                for task in background_tasks:
+                    task.cancel()
+                await asyncio.gather(*background_tasks, return_exceptions=True)
+
     except Exception as e:
-        print(f"❌ WebSocket error: {e}")
+        print(f"[WS] Gemini Live session error: {type(e).__name__}: {e}\n{traceback.format_exc()}")
         try:
+            await websocket.send_text(json.dumps({"error": f"Failed to connect to Gemini Live API: {e}"}))
             await websocket.close()
-        except:
+        except Exception:
             pass
 
 @app.get("/coding-assessment", response_class=HTMLResponse)
@@ -742,7 +798,7 @@ async def run_code(request: Request):
         code = data.get('code', '')
         language = data.get('language', 'python')
         
-        print(f"\n💻 Running {language} code...")
+        print(f"\n[CODE] Running {language} code...")
         
         if language == 'python':
             with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
@@ -768,7 +824,7 @@ async def run_code(request: Request):
             return {"success": False, "error": f"{language} execution not yet supported"}
             
     except Exception as e:
-        print(f"❌ Code execution error: {e}")
+        print(f"[ERROR] Code execution error: {e}")
         return {"success": False, "error": str(e)}
 
 @app.post("/api/submit-code")
@@ -781,7 +837,7 @@ async def submit_code(request: Request):
         
         session_id = get_session_id(request)
         
-        print(f"\n✅ Submitting {language} solution...")
+        print(f"\n[SUCCESS] Submitting {language} solution...")
         
         # Simple mock evaluation (in production, run actual test cases)
         passed_tests = 3
@@ -799,7 +855,7 @@ async def submit_code(request: Request):
                 'total_tests': total_tests
             }
             save_session(session_id, session_data)
-            print(f"   💾 Coding assessment saved to session (Score: {score}/100)")
+            print(f"   [SAVE] Coding assessment saved to session (Score: {score}/100)")
         
         return {
             "passed": passed_tests == total_tests,
@@ -811,7 +867,7 @@ async def submit_code(request: Request):
         }
         
     except Exception as e:
-        print(f"❌ Code submission error: {e}")
+        print(f"[ERROR] Code submission error: {e}")
         return {"passed": False, "error": str(e)}
 
 @app.post("/api/analyze-body-language")
@@ -831,7 +887,7 @@ async def analyze_body_language():
         return {"success": True, "analysis": analysis}
         
     except Exception as e:
-        print(f"❌ Body language analysis error: {e}")
+        print(f"[ERROR] Body language analysis error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/evaluate")
@@ -855,7 +911,7 @@ async def evaluate_interview(request: Request):
         if len(conversation_history) < 2:
             raise HTTPException(status_code=400, detail="Not enough conversation data")
         
-        print(f"🔍 Evaluating {user_name} using Gemini AI...")
+        print(f"[SEARCH] Evaluating {user_name} using Gemini AI...")
         
         # Build conversation transcript
         transcript = "\n\n".join([
@@ -935,7 +991,7 @@ SCORING CRITERIA:
 
 Be specific and reference actual examples from the interview transcript and resume."""
 
-        print("📤 Sending evaluation request to Gemini 2.5 Flash...")
+        print("[SEND] Sending evaluation request to Gemini 2.5 Flash...")
         
         response = client.models.generate_content(
             model="gemini-2.5-flash",
@@ -944,17 +1000,17 @@ Be specific and reference actual examples from the interview transcript and resu
         
         # Extract JSON from response
         response_text = response.text.strip()
-        print(f"📥 Received Gemini response: {response_text[:200]}...")
+        print(f"[RECEIVE] Received Gemini response: {response_text[:200]}...")
         
         # Try to extract JSON
         json_match = re.search(r'\{[\s\S]*\}', response_text)
         if json_match:
             evaluation = json.loads(json_match.group())
-            print(f"✅ Evaluation parsed successfully")
+            print(f"[SUCCESS] Evaluation parsed successfully")
             print(f"   Overall Score: {evaluation.get('overall_score', 'N/A')}/100")
             print(f"   Recommendation: {evaluation.get('recommendation', 'N/A')}")
         else:
-            print("⚠️ Could not parse JSON, using fallback evaluation")
+            print("[WARNING] Could not parse JSON, using fallback evaluation")
             evaluation = {
                 "overall_score": 75,
                 "technical_score": 80,
@@ -1119,7 +1175,7 @@ Be specific and reference actual examples from the interview transcript and resu
         # Build PDF
         doc.build(story)
         
-        print(f"✅ Report generated: {filename}")
+        print(f"[SUCCESS] Report generated: {filename}")
         
         return {
             "success": True,
@@ -1130,7 +1186,7 @@ Be specific and reference actual examples from the interview transcript and resu
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Evaluation error: {e}")
+        print(f"[ERROR] Evaluation error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/download-report/{filename}")
@@ -1138,7 +1194,7 @@ async def download_report(filename: str):
     """Download generated PDF report"""
     try:
         filepath = os.path.join(REPORTS_FOLDER, filename)
-        print(f"📥 Download request for: {filename}")
+        print(f"[RECEIVE] Download request for: {filename}")
         print(f"   Looking in: {filepath}")
         print(f"   File exists: {os.path.exists(filepath)}")
         
@@ -1149,12 +1205,12 @@ async def download_report(filename: str):
                 filename=filename
             )
         else:
-            print(f"   ❌ File not found!")
+            print(f"   [ERROR] File not found!")
             raise HTTPException(status_code=404, detail="Report not found")
     except HTTPException:
         raise
     except Exception as e:
-        print(f"   ❌ Download error: {e}")
+        print(f"   [ERROR] Download error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/records")

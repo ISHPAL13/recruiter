@@ -165,8 +165,6 @@ function renderApp() {
 
     if (currentPage === 'dashboard') renderDashboard();
     else if (currentPage === 'interview') renderInterview();
-    if (currentPage === 'dashboard') renderDashboard();
-    else if (currentPage === 'interview') renderInterview();
     else if (currentPage === 'training') renderTraining();
     else if (currentPage === 'profile') renderProfile();
   } else {

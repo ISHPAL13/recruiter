@@ -12,6 +12,7 @@ build/
 venv/
 env/
 ENV/
+.venv/
 
 # Flask
 instance/
@@ -25,6 +26,10 @@ backend/reports/
 # Environment variables
 .env
 .env.local
+
+# Local reference projects
+_nutrisense_ref/
+_voice_agent_ref/
 
 # IDEs
 .vscode/

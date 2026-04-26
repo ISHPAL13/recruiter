@@ -1,0 +1,13 @@
+.git
+.gitignore
+.venv
+__pycache__
+_nutrisense_ref
+_voice_agent_ref
+backend/__pycache__
+backend/uploads
+backend/reports
+backend/data
+*.pyc
+*.pyo
+*.pyd
